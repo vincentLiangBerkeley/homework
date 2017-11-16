@@ -128,7 +128,19 @@ def learn(env,
     ######
     
     # YOUR CODE HERE
-
+    # Get variables
+    q_fun_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="q_func")
+    target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="target_q_func")
+    
+    # Form q_values
+    q_values = q_func(obs_t_float, num_actions, scope="q_func", reuse=False)
+    target_q_values = q_func(obs_tp1_float, num_actions, scope="target_q_func", reuse=False)
+    y = rew_t_ph + gamma * tf.reduce_max(target_q_values, axis=1)
+    act_t = tf.one_hot(act_t_ph, depth=num_actions, dtype=tf.float32)
+    q_act_value = tf.reduce_sum(tf.multiply(act_t, q_values), axis=1)
+    
+    # Error = ||q_act_value - y||^2
+    total_error = tf.square(tf.subtract(q_act_value, y))
     ######
 
     # construct optimization op (with gradient clipping)
@@ -194,8 +206,27 @@ def learn(env,
 
         #####
         
-        # YOUR CODE HERE
-
+        # Store the observation in replay buffer
+        replay_buffer.store_frame(last_orbs)
+        
+        # Check whether this is the first iteration
+        if t == 0:
+            action, reward, done = env.action_space.sample(), 0.0, False
+        
+        # Use epsilon-exploration to determine current action
+        epsilon = exploration.value(t)
+        if not model_initialized or random.random() < epsilon:
+            action = env.action_space.sample()
+        else:
+            inputs = replay_buffer.encode_recent_observation()
+            q_values = session.run(q_values, feed_dict={obs_t_ph: inputs[None, :]})
+            action = np.argmax(q_values)
+            
+        last_orbs, reward, done, info = env.step(action)
+        if done:
+            last_orbs = env.reset()
+            done = False
+        
         #####
 
         # at this point, the environment should have been advanced one step (and
@@ -244,8 +275,31 @@ def learn(env,
             # variable num_param_updates useful for this (it was initialized to 0)
             #####
             
-            # YOUR CODE HERE
-
+            # 1. Sample a batch of observations
+            obs_batch, act_batch, rew_batch, next_obs_batch, done_mask = replay_buffer.sample(batch_size)
+            
+            # 2. initialize the model
+            if not model_initialized:
+                initialize_interdependent_variables(session, tf.global_variables(), {
+                    obs_t_ph: obs_batch,
+                    obs_tp1_ph: next_obs_batch})
+                session.run(update_target_fn)
+                model_initialized = True
+            
+            # 3. Train 
+            session.run(train_fn, feed_dict = {
+                obs_t_ph: obs_batch, 
+                act_t_ph: act_batch,
+                rew_t_ph: rew_batch,
+                obs_tp1_ph: next_obs_batch,
+                done_mask_ph: done_mas,
+                learning_rate: optimizer_spec.lr_schedule.value(t)})
+            
+            # 4. update target net
+            if t % target_update_freq == 0:
+                session.run(update_target_fn)
+                num_param_updates += 1
+                
             #####
 
         ### 4. Log progress
